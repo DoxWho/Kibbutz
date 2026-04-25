@@ -79,6 +79,11 @@
         <header class="mb-8 no-print text-center">
             <h1 class="text-3xl font-bold text-gray-800 mb-2">Pioneer Identity Cards (1920s)</h1>
             <p class="text-gray-600 mb-4">Set your printer to <b>Landscape Mode</b>. Cards are formatted 6 per page (3x2 grid).</p>
+            
+            <div id="apiKeyNotice" class="mb-4 p-3 bg-yellow-100 border border-yellow-300 rounded-lg text-sm text-yellow-800 inline-block">
+                <strong>Note:</strong> Ensure your API Key is set in the script if hosting externally.
+            </div>
+
             <div class="flex justify-center gap-4">
                 <button id="generateBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg">
                     <span id="btnText">Generate All 18 Portraits</span>
@@ -99,11 +104,13 @@
     </div>
 
     <script>
-        const apiKey = "";
+        // IMPORTANT: When hosting externally, you must provide your own Gemini API Key here
+        const apiKey = "AIzaSyD_cohnDZ2-DDZo9nRVz3GfcOTWvYBiLw8"; 
+
         const pioneers = [
             { name: "Abram", origin: "Russia", role: "Field Guard", desc: "A late teen male with a round face, heavily tanned sun-bronzed skin, wearing a wide-brimmed khaki hat, 1920s style, crayon drawing illustration style." },
             { name: "Sarah", origin: "Poland", role: "Doctor", desc: "A young woman in her early 20s, light skin, round glasses, hair in a bun, wearing a simple white collared shirt, 1920s style, crayon drawing illustration style." },
-            { name: "Miriam", origin: "Odessa", role: "Nurse", desc: "A smiling young woman, late teens, tanned skin, wearing a blue headscarf and a work apron, 1920s style, crayon drawing illustration style." },
+            { name: "Miriam", origin: "Odessa", role: "Cunner/Nurse", desc: "A smiling young woman, late teens, tanned skin, wearing a blue headscarf and a work apron, 1920s style, crayon drawing illustration style." },
             { name: "Yosef", origin: "Lithuania", role: "Blacksmith", desc: "A young man in his early 20s, strong jaw, soot-smudged tan skin, wearing a dark cap and a grey shirt, 1920s style, crayon drawing illustration style." },
             { name: "Rivka", origin: "Germany", role: "Teacher", desc: "A young woman, late teens, light skin, holding a book, wearing a simple green dress and a small sunhat, 1920s style, crayon drawing illustration style." },
             { name: "Moishe", origin: "Ukraine", role: "Cowherd", desc: "A freckled face young man, late teens, sun-reddened tan skin, wearing a straw hat and holding a wooden staff, 1920s style, crayon drawing illustration style." },
@@ -122,31 +129,49 @@
         ];
 
         async function generateImage(prompt) {
+            if (!apiKey) {
+                console.error("No API Key provided.");
+                return null;
+            }
+            
             const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`;
             const payload = {
                 instances: [{ prompt: `Hand-drawn crayon portrait of ${prompt}. Vibrant wax colors, textured paper background, solo character, 1920s vintage style, high detail.` }],
                 parameters: { sampleCount: 1 }
             };
 
-            let retries = 5;
-            let backoff = 1000;
-            while (retries > 0) {
+            // Implementation of mandatory exponential backoff
+            const retryDelays = [1000, 2000, 4000, 8000, 16000];
+            
+            for (let i = 0; i <= retryDelays.length; i++) {
                 try {
                     const response = await fetch(url, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
                     });
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    if (response.status === 429 || response.status >= 500) {
+                        throw new Error(`Server Error: ${response.status}`);
+                    }
+                    
+                    if (!response.ok) {
+                        const errData = await response.json();
+                        console.error("API Error:", errData);
+                        return null; 
+                    }
+                    
                     const data = await response.json();
                     if (data.predictions?.[0]?.bytesBase64Encoded) {
                         return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
                     }
+                    return null;
                 } catch (e) {
-                    retries--;
-                    if (retries === 0) return null;
-                    await new Promise(res => setTimeout(res, backoff));
-                    backoff *= 2;
+                    if (i === retryDelays.length) {
+                        console.error("Max retries reached.");
+                        return null;
+                    }
+                    await new Promise(res => setTimeout(res, retryDelays[i]));
                 }
             }
             return null;
@@ -217,7 +242,8 @@
                 loaderDiv.classList.add('hidden');
             } else {
                 spinner.classList.add('hidden');
-                loaderText.innerText = "Error";
+                loaderText.innerText = apiKey ? "Generation Failed" : "API Key Missing";
+                loaderText.classList.add('text-red-500');
             }
             
             completed++;
@@ -232,20 +258,21 @@
         // Updated print logic to ensure focus is on the current document
         document.getElementById('printBtn').addEventListener('click', function() {
             try {
-                // Focus the current window explicitly
                 window.focus();
-                // Brief timeout to ensure DOM focus is caught before print dialog interrupts
                 setTimeout(() => {
                     window.print();
                 }, 250);
             } catch (e) {
                 console.error("Print failed", e);
-                // Fallback for some browsers
                 document.execCommand('print', false, null);
             }
         });
 
         document.getElementById('generateBtn').onclick = async () => {
+            if (!apiKey) {
+                alert("Please add your Google Gemini API Key to the script before generating images.");
+                return;
+            }
             const btn = document.getElementById('generateBtn');
             btn.disabled = true;
             btn.classList.add('opacity-50');
@@ -253,10 +280,13 @@
             document.getElementById('progressStatus').classList.remove('hidden');
             completed = 0;
 
-            const batchSize = 3;
+            // Process in smaller batches to avoid rate limits
+            const batchSize = 2;
             for (let i = 0; i < pioneers.length; i += batchSize) {
                 const batch = pioneers.slice(i, i + batchSize);
                 await Promise.all(batch.map(p => processPioneer(p)));
+                // Slight delay between batches for safety
+                await new Promise(r => setTimeout(r, 500));
             }
         };
     </script>
